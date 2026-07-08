@@ -11,6 +11,10 @@
 - 支持本地 A 记录应答
 - 支持通过 `0.0.0.0` 屏蔽域名，并返回 NXDOMAIN
 - 本地未命中时转发到上游 DNS
+- 对上游成功返回的 A/IN 响应进行 TTL 缓存，重复查询可直接从缓存返回
+- 上游 DNS 超时或出错时返回 SERVFAIL（RCODE=2），避免客户端一直等待
+- 提供 Web 可视化控制台，展示运行状态、本地规则、三种处理路径、实时查询日志和统计计数
+- 支持在可视化页面中一键发送测试查询、重载 `dnsrelay.txt`、查看并清空 DNS 缓存
 - 支持命令行参数配置监听地址、监听端口、上游 DNS 和本地数据库文件
 - 输出运行日志，方便调试和写实验报告
 
@@ -57,6 +61,24 @@ local.test 1.2.3.4
 python dnsrelay.py
 ```
 
+程序默认同时启动可视化控制台：
+
+```text
+http://127.0.0.1:18080
+```
+
+如果想指定控制台端口：
+
+```powershell
+python dnsrelay.py --dashboard-port 18081
+```
+
+如果只想运行命令行 DNS Relay，不启动可视化控制台：
+
+```powershell
+python dnsrelay.py --no-dashboard
+```
+
 课程实验中如果需要监听标准 DNS 端口 `53`，请用管理员权限打开 PowerShell，然后运行：
 
 ```powershell
@@ -70,6 +92,41 @@ python dnsrelay.py --listen-port 53 --upstream-host 114.114.114.114
 ```
 
 ## 测试方法
+
+### 方法一：使用可视化控制台
+
+打开：
+
+```text
+http://127.0.0.1:18080
+```
+
+页面中可以直接点击：
+
+- `Local A`：测试 `local.test`，应命中本地 A 记录
+- `NXDOMAIN`：测试 `blocked.test`，应返回 RCODE=3
+- `Forward`：测试 `www.baidu.com`，应转发给上游 DNS
+
+页面会实时展示：
+
+- 本地规则表
+- Client -> Relay -> Upstream DNS 流程
+- Local Answer、NXDOMAIN、Forwarded、Error 计数
+- Cache Hit 计数和当前缓存条目
+- 最近 DNS 查询事件
+- 最后一个报文的 ID、QTYPE、QCLASS、RCODE、返回 IP 和字节数
+
+点击 `Reload Rules` 可以在不重启程序的情况下重新读取 `dnsrelay.txt`。
+
+点击 `Clear Cache` 可以清空上游 DNS 响应缓存。
+
+缓存说明：
+
+- 只缓存本地未命中后由上游 DNS 成功返回的 A/IN 响应
+- 缓存过期时间来自 DNS 响应里的 TTL
+- 本地规则命中和 `0.0.0.0` 屏蔽规则不会进入缓存
+
+### 方法二：使用 nslookup
 
 如果程序监听的是 `53` 端口，可以使用：
 

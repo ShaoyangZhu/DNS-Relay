@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 tmp/
 *.pdf
+.DS_Store
+*.md
+!README.md
