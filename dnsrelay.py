@@ -3,6 +3,7 @@ import ipaddress
 import socket
 import struct
 import sys
+import time
 from datetime import datetime
 
 
@@ -17,6 +18,7 @@ DNS_HEADER_SIZE = 12
 TYPE_A = 1
 CLASS_IN = 1
 RCODE_NAME_ERROR = 3
+CACHE_TTL_SECONDS = 60
 
 
 def log(message):
@@ -179,7 +181,19 @@ def forward_query(query, upstream):
         return response
 
 
-def handle_query(query, upstream_addr, local_records):
+def response_with_query_id(response, query_id):
+    return struct.pack("!H", query_id) + response[2:]
+
+
+def is_cacheable_response(response):
+    if len(response) < DNS_HEADER_SIZE:
+        return False
+    _, flags, _, ancount, _, _ = struct.unpack("!HHHHHH", response[:DNS_HEADER_SIZE])
+    rcode = flags & 0x000F
+    return rcode == 0 and ancount > 0
+
+
+def handle_query(query, upstream_addr, local_records, cache):
     try:
         parsed = parse_dns_query(query)
     except ValueError as exc:
@@ -193,8 +207,22 @@ def handle_query(query, upstream_addr, local_records):
 
     local_ip = local_records.get(domain)
     if local_ip is None:
+        cache_key = (domain, qtype, qclass)
+        cached = cache.get(cache_key)
+        now = time.time()
+        if cached is not None:
+            expires_at, cached_response = cached
+            if expires_at > now:
+                log("Cache hit; returning cached upstream response")
+                return response_with_query_id(cached_response, parsed["id"]), "cache-hit"
+            del cache[cache_key]
+
         log("No local record; forwarding")
-        return forward_query(query, upstream_addr), "forward"
+        response = forward_query(query, upstream_addr)
+        if is_cacheable_response(response):
+            cache[cache_key] = (now + CACHE_TTL_SECONDS, response)
+            log(f"Cached upstream response for {CACHE_TTL_SECONDS} seconds")
+        return response, "forward"
 
     if local_ip == "0.0.0.0":
         log("Local record is 0.0.0.0; returning NXDOMAIN")
@@ -212,6 +240,7 @@ def run_relay(listen_host, listen_port, upstream_host, upstream_port, db_file):
     listen_addr = (listen_host, listen_port)
     upstream_addr = (upstream_host, upstream_port)
     local_records = load_local_records(db_file)
+    cache = {}
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as relay_sock:
         relay_sock.bind(listen_addr)
@@ -224,7 +253,7 @@ def run_relay(listen_host, listen_port, upstream_host, upstream_port, db_file):
             log(f"Received {len(query)} bytes from {client_addr[0]}:{client_addr[1]}")
 
             try:
-                response, source = handle_query(query, upstream_addr, local_records)
+                response, source = handle_query(query, upstream_addr, local_records, cache)
             except socket.timeout:
                 log("Upstream DNS timeout; no response sent to client")
                 continue
